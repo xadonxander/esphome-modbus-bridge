@@ -57,7 +57,7 @@ void ModbusTcpGateway::accept_client_() {
   if (server_fd_ < 0) return;
   int fd = accept(server_fd_, nullptr, nullptr);
   if (fd < 0) return;
-  if (client_fd_ >= 0) { close(fd); return; }
+  if (client_fd_ >= 0) { ESP_LOGW(TAG, "Rejecting additional Modbus TCP client (one client supported)"); close(fd); return; }
   client_fd_ = fd;
   fcntl(client_fd_, F_SETFL, fcntl(client_fd_, F_GETFL, 0) | O_NONBLOCK);
   ESP_LOGI(TAG, "Modbus TCP client connected");
@@ -111,6 +111,7 @@ void ModbusTcpGateway::start_request_(const uint8_t *frame, size_t length) {
   delayMicroseconds(turnaround_us_);
   direction_pin_->digital_write(false);
   request_started_ = millis(); pending_ = true; ++requests_;
+  ESP_LOGI(TAG, "RTU request #%u: slave=%u function=0x%02X", (unsigned) requests_, unit_id_, function_);
 }
 
 bool ModbusTcpGateway::response_complete_(const std::vector<uint8_t> &b) {
@@ -123,7 +124,7 @@ bool ModbusTcpGateway::response_complete_(const std::vector<uint8_t> &b) {
 
 void ModbusTcpGateway::complete_response_(bool timed_out) {
   pending_ = false;
-  if (timed_out) { ++timeouts_; send_exception_(function_, 0x0B); return; }
+  if (timed_out) { ++timeouts_; ESP_LOGW(TAG, "RTU timeout: slave=%u function=0x%02X", unit_id_, function_); send_exception_(function_, 0x0B); return; }
   if (rtu_buffer_.size() < 5 || rtu_buffer_[0] != unit_id_ ||
       (rtu_buffer_[1] != function_ && rtu_buffer_[1] != (function_ | 0x80))) {
     ++crc_errors_; send_exception_(function_, 0x04); return;
@@ -134,6 +135,7 @@ void ModbusTcpGateway::complete_response_(bool timed_out) {
     ++crc_errors_; send_exception_(function_, 0x04); return;
   }
   ++successes_;
+  ESP_LOGI(TAG, "RTU response OK: slave=%u function=0x%02X", unit_id_, function_);
   send_tcp_(rtu_buffer_.data() + 1, n - 3);
 }
 
@@ -152,8 +154,8 @@ void ModbusTcpGateway::read_client_() {
   if (client_fd_ < 0) return;
   uint8_t buf[256];
   int n = recv(client_fd_, buf, sizeof(buf), MSG_DONTWAIT);
-  if (n == 0) { close_client_(); return; }
-  if (n < 0 && errno != EWOULDBLOCK && errno != EAGAIN) { close_client_(); return; }
+  if (n == 0) { ESP_LOGI(TAG, "Modbus TCP client disconnected"); close_client_(); return; }
+  if (n < 0 && errno != EWOULDBLOCK && errno != EAGAIN) { ESP_LOGW(TAG, "Modbus TCP recv error: %d", errno); close_client_(); return; }
   if (n > 0) tcp_buffer_.insert(tcp_buffer_.end(), buf, buf + n);
   if (tcp_buffer_.size() > 520) { close_client_(); return; }
   if (pending_) return;
